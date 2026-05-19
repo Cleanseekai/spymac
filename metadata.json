@@ -1,0 +1,6 @@
+{
+  "name": "Hidden Housemate Cam",
+  "description": "A disguised security and monitoring application that looks like a social media feed.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
