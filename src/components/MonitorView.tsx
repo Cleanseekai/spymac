@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import { X, Video, VideoOff, Maximize2, Mic, Eye, ThumbsUp, Activity } from "lucide-react";
+import { X, Video, VideoOff, Maximize2, Mic, Eye, ThumbsUp, Activity, Settings } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import * as tf from "@tensorflow/tfjs";
@@ -23,6 +23,21 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
   const [detections, setDetections] = useState<cocoSsd.DetectedObject[]>([]);
   const [isMotionDetected, setIsMotionDetected] = useState(false);
   const [eventLogs, setEventLogs] = useState<{ id: string; text: string; time: Date }[]>([]);
+  
+  const [videoQuality, setVideoQuality] = useState<"auto" | "480p" | "720p" | "1080p">("auto");
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAiSettingsModal, setShowAiSettingsModal] = useState(false);
+  const [alertPreferences, setAlertPreferences] = useState({
+    motion: true,
+    person: true,
+    face: true,
+    pets: true,
+  });
+  const alertPreferencesRef = useRef(alertPreferences);
+
+  useEffect(() => {
+    alertPreferencesRef.current = alertPreferences;
+  }, [alertPreferences]);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -95,7 +110,9 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
                     }
                     if (diffCount > (frameData.data.length / 4) * 0.05) {
                       motionFound = true;
-                      addEventLog("Motion Detected");
+                      if (alertPreferencesRef.current.motion) {
+                        addEventLog("Motion Detected");
+                      }
                     }
                   }
                   lastFrameDataRef.current = frameData.data;
@@ -107,7 +124,9 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
              const predictions = await cocoModelRef.current.detect(video);
              setDetections(predictions);
              predictions.forEach(prediction => {
-               if (["person", "cat", "dog", "bird"].includes(prediction.class)) {
+               if (prediction.class === "person" && alertPreferencesRef.current.person) {
+                 addEventLog("PERSON Detected");
+               } else if (["cat", "dog", "bird"].includes(prediction.class) && alertPreferencesRef.current.pets) {
                  addEventLog(`${prediction.class.toUpperCase()} Detected`);
                }
                const [x, y, width, height] = prediction.bbox;
@@ -125,11 +144,13 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
 
              // Face Detection
              const faces = await faceModelRef.current.estimateFaces(video, false);
-             if (faces.length > 0) addEventLog("FACE Detected");
+             if (faces.length > 0 && alertPreferencesRef.current.face) addEventLog("FACE Detected");
              faces.forEach((face) => {
                const start = face.topLeft as [number, number];
                const end = face.bottomRight as [number, number];
                const size = [end[0] - start[0], end[1] - start[1]];
+               const probability = face.probability ? (Array.isArray(face.probability) ? face.probability[0] : face.probability) : 1;
+               const scoreText = `FACE ${Math.round((probability as number) * 100)}%`;
                
                ctx.strokeStyle = '#ef4444'; // red
                ctx.lineWidth = 2;
@@ -138,10 +159,10 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
                ctx.setLineDash([]);
                
                ctx.fillStyle = '#ef4444';
-               ctx.fillRect(start[0], start[1] - 20, 80, 20);
+               ctx.fillRect(start[0], start[1] - 20, Math.max(80, ctx.measureText(scoreText).width + 10), 20);
                ctx.fillStyle = '#ffffff';
                ctx.font = 'bold 12px sans-serif';
-               ctx.fillText('FACE', start[0] + 5, start[1] - 5);
+               ctx.fillText(scoreText, start[0] + 5, start[1] - 5);
              });
            }
          }
@@ -241,7 +262,12 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
       }
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true });
+        let videoConstraints: boolean | MediaTrackConstraints = { facingMode: "user" };
+        if (videoQuality === "480p") videoConstraints = { ...videoConstraints, width: { ideal: 640 }, height: { ideal: 480 } };
+        else if (videoQuality === "720p") videoConstraints = { ...videoConstraints, width: { ideal: 1280 }, height: { ideal: 720 } };
+        else if (videoQuality === "1080p") videoConstraints = { ...videoConstraints, width: { ideal: 1920 }, height: { ideal: 1080 } };
+
+        const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
         setLocalStream(stream);
         if (peerConnection.current) {
           stream.getTracks().forEach(track => peerConnection.current?.addTrack(track, stream));
@@ -363,17 +389,65 @@ export default function MonitorView({ roomId, onBack }: MonitorViewProps) {
              >
                 {localStream ? <Video className="w-5 h-5 text-white" /> : <VideoOff className="w-5 h-5 text-white/80" />}
              </button>
-             <button 
-                onClick={() => setAiEnabled(!aiEnabled)}
-                title={aiEnabled ? "Disable AI Tracking" : "Enable AI Tracking"}
-                className={cn("w-10 h-10 rounded-full flex items-center justify-center transition-all bg-black/40 backdrop-blur-md border border-white/20", aiEnabled && "bg-green-500/20 border-green-500")}
-             >
-                {modelLoading ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <Activity className={cn("w-5 h-5", aiEnabled ? "text-green-500" : "text-white/80")} />
-                )}
-             </button>
+             <div className="relative">
+                <button 
+                  onClick={() => setShowSettings(!showSettings)}
+                  title="Camera Settings"
+                  className={cn("w-10 h-10 rounded-full flex items-center justify-center transition-all bg-black/40 backdrop-blur-md border border-white/20", showSettings && "bg-white/20")}
+                >
+                  <Settings className="w-5 h-5 text-white/80" />
+                </button>
+
+                <AnimatePresence>
+                  {showSettings && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
+                      className="absolute bottom-12 left-0 bg-black/80 backdrop-blur-md border border-white/20 rounded-xl p-3 w-40 shadow-2xl z-50 flex flex-col gap-1"
+                    >
+                       <div className="text-[12px] font-semibold text-white/60 px-2 uppercase tracking-wide mb-1">Camera Quality</div>
+                       {(["auto", "480p", "720p", "1080p"] as const).map(quality => (
+                         <button 
+                            key={quality}
+                            onClick={() => { setVideoQuality(quality); setShowSettings(false); }}
+                            className={cn(
+                              "text-left px-2 py-1.5 rounded-lg text-[14px] transition-colors font-medium",
+                              videoQuality === quality ? "bg-fb-blue text-white" : "hover:bg-white/10 text-white/90"
+                            )}
+                         >
+                           {quality === "auto" ? "Auto Resolution" : quality.toUpperCase()}
+                         </button>
+                       ))}
+                       
+                       <div className="text-[12px] font-semibold text-white/60 px-2 uppercase tracking-wide mb-1 mt-3">Smart Detection</div>
+                       <button 
+                          onClick={() => setAiEnabled(!aiEnabled)}
+                          className="w-full flex justify-between items-center px-2 py-2 rounded-lg hover:bg-white/10 transition-colors"
+                       >
+                         <span className="text-[14px] font-medium text-white/90">Enable AI Engine</span>
+                         <div className={cn("w-8 h-4 rounded-full transition-colors flex items-center px-0.5 relative", aiEnabled ? "bg-green-500" : "bg-white/30")}>
+                           <div className={cn("w-3 h-3 bg-white rounded-full transition-transform absolute", aiEnabled ? "translate-x-4" : "translate-x-0")} />
+                         </div>
+                       </button>
+
+                       <div className="text-[12px] font-semibold text-white/60 px-2 uppercase tracking-wide mb-1 mt-3">AI Notifications</div>
+                       {(["motion", "person", "face", "pets"] as const).map(key => (
+                         <button 
+                            key={key}
+                            onClick={() => setAlertPreferences(prev => ({ ...prev, [key]: !prev[key] }))}
+                            className={cn(
+                              "text-left px-2 py-1.5 rounded-lg text-[14px] transition-colors font-medium flex justify-between items-center",
+                              alertPreferences[key] ? "text-green-400" : "hover:bg-white/10 text-white/90"
+                            )}
+                         >
+                           <span className="capitalize">{key === "pets" ? "Animals / Pets" : key}</span>
+                           {alertPreferences[key] && <div className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                         </button>
+                       ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+             </div>
              <div className="relative flex-1 bg-black/40 backdrop-blur-md border border-white/20 rounded-full flex items-center px-4 py-2 text-white/50 text-sm">
                 Write a comment...
              </div>
